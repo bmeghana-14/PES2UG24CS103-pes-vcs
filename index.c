@@ -271,5 +271,3 @@ int index_add(Index *index, const char *path) {
 
     return index_save(index);
 }
-
-//PES2UG24CS103
