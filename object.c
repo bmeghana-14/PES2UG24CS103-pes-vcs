@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <openssl/evp.h>
+#include <errno.h>
 
 // ─── PROVIDED ────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,7 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     else if (type == OBJ_COMMIT) type_str = "commit";
     else return -1;
 
+    // header includes '\0'
     int header_len = snprintf(header, sizeof(header), "%s %zu", type_str, len) + 1;
 
     size_t total_len = header_len + len;
@@ -69,8 +71,10 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     memcpy(full, header, header_len);
     memcpy(full + header_len, data, len);
 
+    // compute hash of full object
     compute_hash(full, total_len, id_out);
 
+    // deduplication
     if (object_exists(id_out)) {
         free(full);
         return 0;
@@ -79,9 +83,11 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     char path[512];
     object_path(id_out, path, sizeof(path));
 
-    // Extract directory path
+    // extract directory path
     char dir[512];
     strncpy(dir, path, sizeof(dir));
+    dir[sizeof(dir) - 1] = '\0';
+
     char *slash = strrchr(dir, '/');
     if (!slash) {
         free(full);
@@ -89,12 +95,21 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     }
     *slash = '\0';
 
-    // Ensure directories exist
-    mkdir(".pes", 0755);
-    mkdir(OBJECTS_DIR, 0755);
-    mkdir(dir, 0755);
+    // create directories safely
+    if (mkdir(PES_DIR, 0755) != 0 && errno != EEXIST) {
+        free(full);
+        return -1;
+    }
+    if (mkdir(OBJECTS_DIR, 0755) != 0 && errno != EEXIST) {
+        free(full);
+        return -1;
+    }
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        free(full);
+        return -1;
+    }
 
-    // Temp file
+    // temp file
     char temp_path[512];
     snprintf(temp_path, sizeof(temp_path), "%s/tmpXXXXXX", dir);
 
@@ -104,7 +119,7 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
         return -1;
     }
 
-    // Safe write loop
+    // safe write loop
     ssize_t written = 0;
     while (written < (ssize_t)total_len) {
         ssize_t n = write(fd, full + written, total_len - written);
@@ -120,12 +135,14 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     fsync(fd);
     close(fd);
 
+    // atomic rename
     if (rename(temp_path, path) != 0) {
         unlink(temp_path);
         free(full);
         return -1;
     }
 
+    // fsync directory
     int dirfd = open(dir, O_DIRECTORY);
     if (dirfd >= 0) {
         fsync(dirfd);
@@ -165,7 +182,7 @@ int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_
     }
     fclose(f);
 
-    // Verify hash
+    // verify integrity
     ObjectID computed;
     compute_hash(buf, size, &computed);
     if (memcmp(computed.hash, id->hash, HASH_SIZE) != 0) {
@@ -173,7 +190,7 @@ int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_
         return -1;
     }
 
-    // Find header separator
+    // find header separator
     void *nul = memchr(buf, '\0', size);
     if (!nul) {
         free(buf);
@@ -188,6 +205,7 @@ int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_
         return -1;
     }
 
+    // map type
     if (strcmp(type_str, "blob") == 0) *type_out = OBJ_BLOB;
     else if (strcmp(type_str, "tree") == 0) *type_out = OBJ_TREE;
     else if (strcmp(type_str, "commit") == 0) *type_out = OBJ_COMMIT;
