@@ -25,7 +25,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-// Forward declarations (implemented in object.c)
+// Implemented in object.c
 int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
 int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_t *len_out);
 
@@ -112,9 +112,16 @@ int commit_walk(commit_walk_fn callback, void *ctx) {
         size_t raw_len;
         if (object_read(&id, &type, &raw, &raw_len) != 0) return -1;
 
+        char *text = realloc(raw, raw_len + 1);
+        if (!text) {
+            free(raw);
+            return -1;
+        }
+        text[raw_len] = '\0';
+
         Commit c;
-        int rc = commit_parse(raw, raw_len, &c);
-        free(raw);
+        int rc = commit_parse(text, raw_len, &c);
+        free(text);
         if (rc != 0) return -1;
 
         callback(&id, &c, ctx);
@@ -193,9 +200,36 @@ int head_update(const ObjectID *new_commit) {
 //   - head_update       : moves the branch pointer to your new commit
 //
 // Returns 0 on success, -1 on error.
+
 int commit_create(const char *message, ObjectID *commit_id_out) {
-    // TODO: Implement commit creation
-    // (See Lab Appendix for logical steps)
-    (void)message; (void)commit_id_out;
-    return -1;
+    ObjectID tree_id;
+    if (tree_from_index(&tree_id) != 0) return -1;
+
+    Commit c;
+    memset(&c, 0, sizeof(c));
+    c.tree = tree_id;
+    if (head_read(&c.parent) == 0) {
+        c.has_parent = 1;
+    } else {
+        c.has_parent = 0;
+    }
+    snprintf(c.author, sizeof(c.author), "%s", pes_author());
+    c.timestamp = (uint64_t)time(NULL);
+    snprintf(c.message, sizeof(c.message), "%s", message);
+
+    void *raw;
+    size_t raw_len;
+    if (commit_serialize(&c, &raw, &raw_len) != 0) return -1;
+
+    ObjectID commit_id;
+    if (object_write(OBJ_COMMIT, raw, raw_len, &commit_id) != 0) {
+        free(raw);
+        return -1;
+    }
+    free(raw);
+
+    if (head_update(&commit_id) != 0) return -1;
+
+    *commit_id_out = commit_id;
+    return 0;
 }
