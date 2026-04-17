@@ -227,4 +227,3 @@ int tree_from_index(ObjectID *id_out) {
     free(sorted);
     return rc;
 }
-//tree
