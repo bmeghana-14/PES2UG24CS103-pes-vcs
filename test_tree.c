@@ -11,6 +11,10 @@
 #include <assert.h>
 #include <stdlib.h>
 
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
+int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_t *len_out);
+void object_path(const ObjectID *id, char *path_out, size_t path_size);
+
 void test_tree_roundtrip(void) {
     // Build a tree manually
     Tree original;
@@ -97,6 +101,48 @@ void test_tree_determinism(void) {
     printf("PASS: tree deterministic serialization\n");
 }
 
+void test_tree_object_store(void) {
+    Tree tree;
+    tree.count = 2;
+    tree.entries[0].mode = 0100644;
+    memset(tree.entries[0].hash.hash, 0xDD, HASH_SIZE);
+    strcpy(tree.entries[0].name, "a.txt");
+    tree.entries[1].mode = 0100644;
+    memset(tree.entries[1].hash.hash, 0xEE, HASH_SIZE);
+    strcpy(tree.entries[1].name, "b.txt");
+
+    void *raw;
+    size_t raw_len;
+    assert(tree_serialize(&tree, &raw, &raw_len) == 0);
+
+    ObjectID id;
+    assert(object_write(OBJ_TREE, raw, raw_len, &id) == 0);
+    free(raw);
+
+    char hex[HASH_HEX_SIZE + 1];
+    hash_to_hex(&id, hex);
+    printf("Stored tree object hash: %s\n", hex);
+
+    char path[512];
+    object_path(&id, path, sizeof(path));
+    printf("Object stored at: %s\n", path);
+
+    ObjectType type;
+    void *read_back;
+    size_t read_len;
+    assert(object_read(&id, &type, &read_back, &read_len) == 0);
+    assert(type == OBJ_TREE);
+
+    Tree parsed;
+    assert(tree_parse(read_back, read_len, &parsed) == 0);
+    assert(parsed.count == 2);
+    assert(strcmp(parsed.entries[0].name, "a.txt") == 0);
+    assert(strcmp(parsed.entries[1].name, "b.txt") == 0);
+    free(read_back);
+
+    printf("PASS: tree object store roundtrip\n");
+}
+
 int main(void) {
     int rc __attribute__((unused));
     rc = system("rm -rf .pes");
@@ -104,6 +150,7 @@ int main(void) {
 
     test_tree_roundtrip();
     test_tree_determinism();
+    test_tree_object_store();
 
     printf("\nAll Phase 2 tests passed.\n");
     return 0;
